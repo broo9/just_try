@@ -1,0 +1,70 @@
+clear
+clc
+data = load('pic_bit.txt');
+data = fix(data);
+% generating tx symbols
+img = imread('pic_1.jpg');
+[m, n, w] = size(img);
+bitlength = m*n*w*8;
+M = 4;
+symbolLength = bitlength./log2(M);
+txBits = data';
+modTable = [1/sqrt(2) sqrt(3/2)*j -1/sqrt(2) -sqrt(3/2)*j];
+txBitsIndex = reshape(txBits, 2, symbolLength);
+txSymbols = modTable([1 2]*txBitsIndex+1); %将2*2的比特转换到对应的星座点上
+k = [1 2]*txBitsIndex;
+figure()
+stem(k(1, 1:100));  %前1000个符号序列
+
+% pulse shaping
+nSamplePerSymbol = 2;
+span = 60;% 单边截断长度
+rolloff = 0.2;
+rrcFilter = rcosdesign(rolloff,span,nSamplePerSymbol);
+txSamples = upfirdn(txSymbols,rrcFilter,nSamplePerSymbol,1); %fir滤波器,最后两项分别是上采样率和下采样率
+txSamples = txSamples./sqrt(mean(abs(txSamples).^2));
+figure;
+plot(10*log10(abs(fftshift(fft(txSamples)))));
+DACResolutionBits = 4;%bits
+clippingRatio = 10;%dB
+
+txSamplesQuan = QuantizClipOne(real(txSamples),clippingRatio,DACResolutionBits) + ...
+    1j*QuantizClipOne(imag(txSamples),clippingRatio,DACResolutionBits);
+%Add AWGN
+snr_dB = 10;
+snr = 10^(snr_dB./10);
+Psignal = mean(abs(txSamples).^2);
+Pnoise = Psignal./snr*nSamplePerSymbol; 
+noise = sqrt(Pnoise).* (randn(1,length(txSamples))+1j*randn(1,length(txSamples)))./sqrt(2);
+rxSamples = txSamples + noise;
+
+%matched filtering
+rxSymbols = upfirdn(rxSamples,rrcFilter,1,nSamplePerSymbol);
+rxSymbols = rxSymbols(span+1:end-span); 
+rxSymbols = rxSymbols./sqrt(mean(abs(rxSymbols).^2));
+%scatterplot(rxSymbols)
+
+%demapping
+for i = 1:M
+    dist(i,:) = abs(rxSymbols - modTable(i)).^2;
+end
+[~,ind] = min(dist);
+decSymbols = modTable(ind);
+SER = sum(abs(decSymbols - txSymbols) > 0.01)./symbolLength;
+
+
+recover_data = zeros(1, length(ind));
+for i = 1:length(ind)
+    recover_data((2*(i-1)+1):(2*i)) = DEC_BIN(ind(i)-1, 2);
+end
+    
+pic_byte = zeros(1, m*n*w);
+for i = 1:m*n*w
+    pic_byte(i) = BIN_DEC(recover_data((8*(i-1)+1):(8*i)), 8);
+end
+img_2 = uint8(reshape(pic_byte, m, n, w));
+subplot(1, 2, 1)
+imshow(img)
+subplot(1, 2, 2)
+imshow(img_2)
+imwrite(img_2, 'recover_QAM.bmp')
